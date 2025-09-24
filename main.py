@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
 from controler import Controller
-from handlers import handlers_router
+from handlers import bot_router
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -28,7 +28,7 @@ async def main():
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     dp = Dispatcher()
-    dp.include_router(handlers_router)
+    dp.include_router(bot_router)
 
     logger.info("Бот запущен")
 

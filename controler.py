@@ -1,5 +1,4 @@
 import json
-import re
 from loguru import logger
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -74,7 +73,8 @@ class Controller:
                 logger.warning(f"Некорректное значение для {key}: {value}")
 
         # Проверяем наличие всех полей
-        required_fields = ['bssid', 'frequency', 'rssi', 'ssid', 'timestamp', 'channel_bandwidth', 'capabilities']
+        required_fields = ['bssid', 'frequency', 'rssi', 'ssid', 'timestamp',
+                           'channel_bandwidth', 'capabilities']
         if all(field in data_dict for field in required_fields):
             networks.append(data_dict)
             logger.info(f"Извлечено {len(networks)} сеть с regex")
@@ -84,35 +84,46 @@ class Controller:
 
         return networks
 
-    def build_network(self, data: Dict[str, Any]) -> WiFiNetwork:
-        """Конвертирует dict в WiFiNetwork. Вызывает KeyError/TypeError,
-        если поля отсутствуют/некорректны."""
+    def build_network(self, data: Dict[str, Any]) -> Optional[WiFiNetwork]:
+        """Конвертирует dict в WiFiNetwork. Логирует ошибки, но не вызывает raise,
+        чтобы не прерывать цикл обработки. Возвращает None при ошибке."""
 
         logger.debug(f"Строим WiFiNetwork из данных: {data}")
+        errors = []
+
         try:
             frequency = int(data['frequency'])
             if frequency <= 0:
-                raise ValueError("Frequency должна быть положительным числом")
+                errors.append("Frequency должна быть положительным числом")
         except (ValueError, KeyError) as e:
-            logger.error(f"Ошибка валидации frequency: {e}")
-            raise ValueError(f"Некорректное значение frequency: {e}")
+            errors.append(f"Некорректное значение frequency: {e}")
 
         try:
             rssi = int(data['rssi'])
         except (ValueError, KeyError) as e:
-            logger.error(f"Ошибка валидации rssi: {e}")
-            raise ValueError(f"Некорректное значение rssi: {e}")
+            errors.append(f"Некорректное значение rssi: {e}")
 
         try:
             timestamp = int(data['timestamp'])
             if timestamp <= 0:
-                raise ValueError("Timestamp должен быть положительным числом")
+                errors.append("Timestamp должен быть положительным числом")
         except (ValueError, KeyError) as e:
-            logger.error(f"Ошибка валидации timestamp: {e}")
-            raise ValueError(f"Некорректное значение timestamp: {e}")
+            errors.append(f"Некорректное значение timestamp: {e}")
+
+        try:
+            bssid = data['bssid']
+            if not re.match(r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$', bssid):
+                errors.append(f"Некорректный BSSID: {bssid}")
+        except KeyError as e:
+            errors.append(f"Отсутствует BSSID: {e}")
+
+        if errors:
+            ssid = data.get('ssid', 'unknown')
+            logger.error(f"Ошибки валидации для сети {ssid}: {', '.join(errors)}")
+            return None
 
         return WiFiNetwork(
-            bssid=data['bssid'],
+            bssid=bssid,
             frequency=frequency,
             rssi=rssi,
             ssid=str(data['ssid']),
@@ -146,15 +157,21 @@ class Controller:
         logger.info("Начинаем обработку payload")
         networks_data = self.parse_json(payload)
         success_count = 0
+        error_count = 0
+        errors = []  # Собираем ошибки для финального лога
         for net_data in networks_data:
-            try:
-                network = self.build_network(net_data)
-                if self.save_network(network):
-                    success_count += 1
-            except Exception as e:
-                logger.error(f"Ошибка обработки сети: {e}")
+            network = self.build_network(net_data)
+            if network is None:
+                error_count += 1
                 continue
-        logger.info(f"Обработано {success_count}/{len(networks_data)} сетей успешно")
+            if self.save_network(network):
+                success_count += 1
+            else:
+                error_count += 1
+                errors.append(f"Ошибка сохранения для {net_data.get('ssid', 'unknown')}")
+        if errors:
+            logger.error(f"Сводка ошибок: {', '.join(errors)}")
+        logger.info(f"Обработано {success_count} успешно, {error_count} с ошибками из {len(networks_data)} сетей")
         return success_count > 0
 
     def logic(self):
