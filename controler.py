@@ -1,4 +1,5 @@
 import json
+import re
 from loguru import logger
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -75,12 +76,13 @@ class Controller:
         # Проверяем наличие всех полей
         required_fields = ['bssid', 'frequency', 'rssi', 'ssid', 'timestamp',
                            'channel_bandwidth', 'capabilities']
-        if all(field in data_dict for field in required_fields):
+        missing = set(required_fields) - set(data_dict.keys())
+        if missing:
+            logger.error(f"Отсутствуют поля: {missing}")
+            raise ValueError("Некорректные данные: отсутствуют обязательные поля")
+        else:
             networks.append(data_dict)
             logger.info(f"Извлечено {len(networks)} сеть с regex")
-        else:
-            logger.error(f"Отсутствуют поля: {set(required_fields) - set(data_dict.keys())}")
-            raise ValueError("Некорректные данные: отсутствуют обязательные поля")
 
         return networks
 
@@ -171,7 +173,8 @@ class Controller:
                 errors.append(f"Ошибка сохранения для {net_data.get('ssid', 'unknown')}")
         if errors:
             logger.error(f"Сводка ошибок: {', '.join(errors)}")
-        logger.info(f"Обработано {success_count} успешно, {error_count} с ошибками из {len(networks_data)} сетей")
+        logger.info(f"Обработано {success_count} успешно, "
+                    f"{error_count} с ошибками из {len(networks_data)} сетей")
         return success_count > 0
 
     def logic(self):
