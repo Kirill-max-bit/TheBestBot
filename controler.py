@@ -1,7 +1,8 @@
 import json
+import re
 from loguru import logger
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from Database import WiFiDB
 
@@ -33,19 +34,55 @@ class Controller:
         self.data = None
         logger.info("Контроллер Controller создан")
 
-    def parse_json(self, payload: Any) -> Dict[str, Any]:
-        """Парсит JSON (str/bytes/dict) в dict. Вызывает ValueError
-        при некорректном вводе."""
+    def parse_json(self, payload: Any) -> List[Dict[str, Any]]:
+        """Парсит JSON (str/bytes/dict/list) в список dict. Вызывает ValueError
+        при некорректном вводе. Если JSON — массив, возвращает список; иначе — одиночный dict в списке."""
 
-        if isinstance(payload, dict):
+        if isinstance(payload, list):
             return payload
+        if isinstance(payload, dict):
+            return [payload]
         try:
             if isinstance(payload, bytes):
                 payload = payload.decode('utf-8')
-            return json.loads(payload)
+            parsed = json.loads(payload)
+            if isinstance(parsed, list):
+                return parsed
+            return [parsed]
         except Exception as e:
             logger.error(f"Ошибка парсинга JSON: {e}")
-            raise ValueError(f"Некорректный JSON: {e}")
+            # Fallback на regex, если json.loads сбоит
+            return self._extract_with_regex(str(payload))
+
+    def _extract_with_regex(self, json_str: str) -> List[Dict[str, Any]]:
+        """Fallback: использует regex для извлечения данных из JSON-строки.
+        Ищет все ключ-значение пары для полей WiFiNetwork."""
+        logger.warning("Используем regex для извлечения данных из JSON")
+        networks = []
+        data_dict = {}
+
+        pattern = r'"(\w+)"\s*:\s*["\']?([^"\']+)["\']?\s*,?'
+        matches = re.findall(pattern, json_str, re.IGNORECASE)
+
+        for key, value in matches:
+            key = key.lower()
+            try:
+                if key in ['frequency', 'rssi', 'timestamp']:
+                    value = int(value)
+                data_dict[key] = value
+            except ValueError:
+                logger.warning(f"Некорректное значение для {key}: {value}")
+
+        # Проверяем наличие всех полей
+        required_fields = ['bssid', 'frequency', 'rssi', 'ssid', 'timestamp', 'channel_bandwidth', 'capabilities']
+        if all(field in data_dict for field in required_fields):
+            networks.append(data_dict)
+            logger.info(f"Извлечено {len(networks)} сеть с regex")
+        else:
+            logger.error(f"Отсутствуют поля: {set(required_fields) - set(data_dict.keys())}")
+            raise ValueError("Некорректные данные: отсутствуют обязательные поля")
+
+        return networks
 
     def build_network(self, data: Dict[str, Any]) -> WiFiNetwork:
         """Конвертирует dict в WiFiNetwork. Вызывает KeyError/TypeError,
@@ -107,9 +144,18 @@ class Controller:
         """Удобный метод: парсит payload, строит модель и сохраняет.
         Возвращает True при успехе."""
         logger.info("Начинаем обработку payload")
-        self.data = self.parse_json(payload)
-        network = self.build_network(self.data)
-        return self.save_network(network)
+        networks_data = self.parse_json(payload)
+        success_count = 0
+        for net_data in networks_data:
+            try:
+                network = self.build_network(net_data)
+                if self.save_network(network):
+                    success_count += 1
+            except Exception as e:
+                logger.error(f"Ошибка обработки сети: {e}")
+                continue
+        logger.info(f"Обработано {success_count}/{len(networks_data)} сетей успешно")
+        return success_count > 0
 
     def logic(self):
         """Логика контроллера: инициализация БД и проверка."""
